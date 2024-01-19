@@ -5,6 +5,18 @@ import (
 	"monkey/ast"
 	"monkey/lexer"
 	"monkey/token"
+	"strconv"
+)
+
+const (
+	_ int = iota
+	LOWEST
+	EQUALS      // ==
+	LESSGREATER // > or <
+	SUM         // +
+	PRODUCT     // *
+	PREFIX      // -X or !X
+	CALL        // myFunction(X)
 )
 
 type parseError struct {
@@ -12,8 +24,13 @@ type parseError struct {
 	msg string
 }
 
+type (
+	prefixParseFn func() (ast.Expression, error)
+	infixParseFn func(ast.Expression) (ast.Expression, error)
+)
+
 func (e *parseError) Error() string {
-	return fmt.Sprintf("%+v - %s", e.token, e.msg)
+	return fmt.Sprintf("Token: %q -- %s", e.token.Type, e.msg)
 }
 
 type Parser struct {
@@ -46,7 +63,31 @@ func New(l *lexer.Lexer) *Parser {
 	p.nextToken()
 	p.nextToken()
 
+	p.prefixParseFns = make(map[token.TokenType]prefixParseFn)
+	p.registerPrefix(token.IDENT, p.parseIdentifier)
+	p.registerPrefix(token.INT,   p.parseIntegerLiteral)
+	p.registerPrefix(token.BANG,  p.parsePrefixExpression)
+	p.registerPrefix(token.MINUS, p.parsePrefixExpression)
+
 	return p
+}
+
+func (p *Parser) parsePrefixExpression() (ast.Expression, error) {
+	expression := &ast.PrefixExpression{
+		Token: p.curToken,
+		Operator: p.curToken.Literal,
+		// No 'Right' yet
+	}
+
+	p.nextToken()
+	exp, err := p.parseExpression(PREFIX); if err != nil { return nil, err }
+	expression.Right = exp
+
+	return expression, nil
+}
+
+func (p *Parser) parseIdentifier() (ast.Expression, error) {
+	return &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}, nil
 }
 
 func (p *Parser) Errors() []string {
@@ -72,6 +113,8 @@ func (p *Parser) ParseProgram() *ast.Program {
 		stmt, err := p.parseStatement()
 		if err == nil {
 			program.Statements = append(program.Statements, stmt)
+		} else {
+			p.errors = append(p.errors, err.Error())
 		}
 		p.nextToken()
 	}
@@ -84,17 +127,37 @@ func (p *Parser) parseStatement() (ast.Statement, error) {
 	case token.LET:
 		stmt, err := p.parseLetStatement()
 		if err == nil {return stmt, nil} else {return nil, err}
-
 	case token.RETURN:
 		stmt, err := p.parseReturnStatement()
 		if err == nil {return stmt, nil} else {return nil, err}
-
 	default:
+		es, err := p.parseExpressionStatement()
+		if err == nil {return es, nil} else {return nil, err}
 		return nil, &parseError{p.curToken, "parseStatement(): Unexpected token"}
 	}
+}
 
-	//fmt.Println("In parseStatement(): control flow should not reach here because we have a default case")
-	//return nil, nil
+func (p *Parser) parseExpressionStatement() (*ast.ExpressionStatement, error) {
+	stmt := &ast.ExpressionStatement{Token: p.curToken}
+
+	es, err := p.parseExpression(LOWEST); if err != nil {return nil, err}
+	stmt.Expression = es
+
+	if p.peekTokenIs(token.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt, nil
+}
+
+func (p *Parser) parseExpression(precedence int) (ast.Expression, error) {
+	prefix := p.prefixParseFns[p.curToken.Type]
+	if prefix == nil {
+		return nil, &parseError{ p.curToken, "parseExpression(): no prefix parse function found" }
+	}
+	leftExp, err := prefix(); if err != nil { return nil, err }
+
+	return leftExp, nil
 }
 
 func (p *Parser) parseLetStatement() (*ast.LetStatement, error) {
@@ -150,7 +213,18 @@ func (p *Parser) parseReturnStatement() (*ast.ReturnStatement, error) {
 	return stmt, nil
 }
 
-type (
-	prefixParseFn func() ast.Expression
-	infixParseFn func(ast.Expression) ast.Expression
-)
+
+func (p *Parser) parseIntegerLiteral() (ast.Expression, error) {
+	lit := &ast.IntegerLiteral{Token: p.curToken}
+
+	value, err := strconv.ParseInt(p.curToken.Literal, 0, 64)
+	if err != nil {
+		msg := fmt.Sprintf("could not parse %q as integer", p.curToken.Literal)
+		p.errors = append(p.errors, msg)
+		return nil, &parseError{p.curToken, "parseIntegerLiteral(): could not parse integer"}
+	}
+
+	lit.Value = value
+
+	return lit, nil
+}
