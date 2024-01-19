@@ -23,6 +23,17 @@ type Parser struct {
 	peekToken token.Token
 
 	errors []string
+
+	prefixParseFns map[token.TokenType]prefixParseFn
+	infixParseFns  map[token.TokenType]infixParseFn
+}
+
+func (p *Parser) registerPrefix(tokenType token.TokenType, fn prefixParseFn) {
+	p.prefixParseFns[tokenType] = fn
+}
+
+func (p *Parser) registerInfix(tokenType token.TokenType, fn infixParseFn) {
+	p.infixParseFns[tokenType] = fn
 }
 
 func New(l *lexer.Lexer) *Parser {
@@ -71,13 +82,12 @@ func (p *Parser) ParseProgram() *ast.Program {
 func (p *Parser) parseStatement() (ast.Statement, error) {
 	switch p.curToken.Type {
 	case token.LET:
-		res, err := p.parseLetStatement()
+		stmt, err := p.parseLetStatement()
+		if err == nil {return stmt, nil} else {return nil, err}
 
-		if err == nil {
-			return res, nil
-		} else {
-			return nil, err
-		}
+	case token.RETURN:
+		stmt, err := p.parseReturnStatement()
+		if err == nil {return stmt, nil} else {return nil, err}
 
 	default:
 		return nil, &parseError{p.curToken, "parseStatement(): Unexpected token"}
@@ -126,3 +136,21 @@ func (p *Parser) expectPeek(t token.TokenType) bool {
 		return false
 	}
 }
+
+func (p *Parser) parseReturnStatement() (*ast.ReturnStatement, error) {
+	stmt := &ast.ReturnStatement{Token: p.curToken}
+
+	p.nextToken()
+
+	// TODO: Skipping expressions until semicolon for now
+	for !p.curTokenIs(token.SEMICOLON) {
+		p.nextToken()
+	}
+
+	return stmt, nil
+}
+
+type (
+	prefixParseFn func() ast.Expression
+	infixParseFn func(ast.Expression) ast.Expression
+)
